@@ -11,8 +11,8 @@ Let's make them [berds]. Yeah, they're [berds] now."
 
 // THREE GOALS:
 // Separation: ~1/r^2 repulsion
-// Cohesion: center of mass of neighbors gives direction of steering vector - subtract agent velocity from this
-// Alignment: avg velocity vector of neighbors is "desired velocity" - subtract agent velocity from this
+// Cohesion: center of mass of neighbors gives direction of steering vector - subtract agent maxSpeed from this
+// Alignment: avg maxSpeed vector of neighbors is "desired maxSpeed" - subtract agent maxSpeed from this
 
 // Obstacle avoidance: also 1/r^2 ?
 
@@ -21,7 +21,8 @@ Let's make them [berds]. Yeah, they're [berds] now."
 //////////////////////////////
 
 float XBOUND = 500, YBOUND = 500, ZBOUND = 500;
-int NUM_BERDS = 5;
+int NUM_BERDS = 10;
+float distance_softening = 0.01;
 
 PVector pos, dir;
 PVector up,right,downleft;
@@ -30,41 +31,88 @@ ArrayList<Berd> Flock; // Test group -- put in Class?
 //Berd b; // Test individual
 
 //////////////////////////////
+// FLOCK
+//////////////////////////////
+class Flock {
+  // Attributes
+  
+  
+  // Methods
+  Flock() {
+  }
+}
+
+//////////////////////////////
 // BERD
 //////////////////////////////
 class Berd {
   // Attributes
+  int id;
   PVector pos, dir;
-  float size = 40.0;
-  float velocity = 2.0;
-  float radius = size; // Radius in which to search for neighbors
+  PVector vel, acc;
+  PVector weightedSep;
+  ArrayList<Berd> neighbors;
+  float size = 20.0;
+  float mass = 1.5;
+  float maxSpeed = 3.0;
+  float radius = size*5; // Radius in which to search for neighbors (tentative)
   
   // Methods
-  Berd(){
+  Berd(int id){
+    this.id = id;
+    
     this.pos = PVector.random3D();
     this.dir = PVector.random3D();
+    this.vel = PVector.random3D();
+    this.acc = new PVector(0.0, 0.0, 0.0);
+    
+    this.weightedSep = new PVector(0.0, 0.0, 0.0);
+    this.neighbors = new ArrayList();
   }
-  Berd(PVector p, PVector d){
+  Berd(PVector p, PVector d, int id){
+    this.id = id;
+    
     this.pos = new PVector(p.x, p.y, p.z);
     this.dir = new PVector(d.x, d.y, d.z);
+    this.vel = new PVector();
+    PVector.mult(this.dir, this.maxSpeed, this.vel);
+    this.acc = new PVector(0.0, 0.0, 0.0);
+    
+    this.weightedSep = new PVector(0.0, 0.0, 0.0);
+    this.neighbors = new ArrayList();
+  }
+  
+  void updateAcc() {
+    this.acc.set(this.weightedSep.x, this.weightedSep.y, this.weightedSep.z);
+    this.acc.mult(this.mass * this.mass);
+  }
+  
+  void updateVel() {
+    this.vel.add(this.acc);
+    this.vel.limit(this.maxSpeed);
   }
   
   void updatePos(){
-    ArrayList<Berd> neighborList = this.findNeighbors();
-    this.pos.add(this.dir.mult(this.velocity));
+    this.findNeighbors();
+    //this.pos.add(this.dir.mult(this.maxSpeed));
+    this.pos.add(this.vel);
     this.pos = enforceTorus(this.pos);
   }
-  // Please note here that velocity is constant for now. 
+  // Please note here that maxSpeed is constant for now. 
   // Will implement the bonafide vector calculus version soon,
   // after confirming core functionality
   void updateDir(){
-    this.dir.set(mouseX-pos.x, mouseY-pos.y, 0.0);
+    //this.dir.set(mouseX-pos.x, mouseY-pos.y, 0.0);
+    //this.dir.set(this.weightedSep.x, this.weightedSep.y, this.weightedSep.z);
+    this.dir.set(this.vel.x, this.vel.y, this.vel.z);
+    this.dir.normalize();
   }
   
   void drawBerd(){
+    this.updateAcc();
+    this.updateVel();
     this.updatePos();
     this.updateDir();
-    this.dir.normalize();
     PVector axis = this.dir.cross(up);
     axis.normalize();
     float dotProd = this.dir.dot(up);
@@ -75,29 +123,42 @@ class Berd {
     rotate(-theta, axis.x, axis.y, axis.z);
     sphereDetail(1,4); 
     sphere(this.size);
-    popMatrix();
+    popMatrix();    
   }
   
-  ArrayList<Berd> findNeighbors() {
+  void findNeighbors() {
     // Using exhaustive search for now.
     // If performance requires it, I'll use 
     // something more sophisticated later.
     
-    ArrayList<Berd> neighborList = new ArrayList();
+    this.neighbors.clear();
+    
+    // simultaneously find avg separation here
+    this.weightedSep.set(0.0,0.0,0.0); // clear it
+    
+    int numNeighbors = 0;
     
     for (Berd p : Flock) {
-      // The following calculation (two lines) will need done again
-      // maybe find a way to only do it once? 
-      // don't make findNeighbors() its own method?
-      PVector sep = new PVector();
-      PVector.sub(this.pos,p.pos,sep);
-      float dist = sep.mag();
-      if(dist < this.radius){
-        neighborList.add(new Berd(p.pos, p.dir));
+      if(p.id != this.id){
+        // The following calculation (two lines) will need done again
+        // maybe find a way to only do it once? 
+        // don't make findNeighbors() its own method?
+        PVector sep = new PVector();
+        PVector.sub(this.pos,p.pos,sep);
+        float dist = sep.mag();
+                
+        if(dist < this.radius){
+          this.neighbors.add(new Berd(p.pos, p.dir, p.id));
+          
+          float weight = 1.0/(dist*dist + distance_softening);
+          this.weightedSep.add(sep.mult(weight));
+                    
+          numNeighbors++;
+        }
       }
     }
     
-    return neighborList;
+    if(numNeighbors != 0) this.weightedSep.mult(1.0/numNeighbors);
   }
 }
 
@@ -130,7 +191,7 @@ void generateFlock(int n){
     PVector tempDir = new PVector(random(XBOUND),random(YBOUND), 0.0);
     tempDir.normalize();
     for(int i= 0; i < n; i++){
-      Flock.add(new Berd(tempPos, tempDir));
+      Flock.add(new Berd(tempPos, tempDir, i));
       tempPos.set(random(XBOUND),random(YBOUND), 0.0);
       tempDir.set(random(XBOUND),random(YBOUND), 0.0);
       tempDir.normalize();
