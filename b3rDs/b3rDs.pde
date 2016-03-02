@@ -14,14 +14,16 @@ Let's make them [berds]. Yeah, they're [berds] now."
 // Cohesion: center of mass of neighbors gives direction of steering vector - subtract agent maxSpeed from this
 // Alignment: avg maxSpeed vector of neighbors is "desired maxSpeed" - subtract agent maxSpeed from this
 
+// Craig Reynolds : Steer = Desired - Velocity
+
 // Obstacle avoidance: also 1/r^2 ?
 
 //////////////////////////////
 // GLOBAL VARIABLES
 //////////////////////////////
 
-float XBOUND = 500, YBOUND = 500, ZBOUND = 500;
-int NUM_BERDS = 10;
+float XBOUND = 700, YBOUND = 700, ZBOUND = 500;
+int NUM_BERDS = 40;
 float distance_softening = 0.01;
 
 PVector pos, dir;
@@ -50,23 +52,31 @@ class Berd {
   int id;
   PVector pos, dir;
   PVector vel, acc;
-  PVector weightedSep;
+  
+  PVector separation, cohesion, alignment;
+  float separationWeight = 1.5, cohesionWeight = 1.0, alignmentWeight = 1.0;
+  
+  PVector desiredSep;
   ArrayList<Berd> neighbors;
   float size = 20.0;
-  float mass = 1.5;
-  float maxSpeed = 3.0;
-  float radius = size*5; // Radius in which to search for neighbors (tentative)
+  float maxSpeed = 3.0, maxForce = 0.02;
+  float radius = 50.0; // Radius in which to search for neighbors (tentative)
+  float desiredDist = 25.0; // Desired separation from neighbors
   
   // Methods
   Berd(int id){
     this.id = id;
     
-    this.pos = PVector.random3D();
-    this.dir = PVector.random3D();
-    this.vel = PVector.random3D();
+    this.pos = new PVector(random(XBOUND), random(YBOUND), 0.0);
+    this.dir = new PVector(random(XBOUND), random(YBOUND), 0.0);
+    this.vel = new PVector(random(XBOUND), random(YBOUND), 0.0);
     this.acc = new PVector(0.0, 0.0, 0.0);
     
-    this.weightedSep = new PVector(0.0, 0.0, 0.0);
+    this.separation = new PVector(0.0, 0.0, 0.0);
+    this.cohesion = new PVector(0.0, 0.0, 0.0);
+    this.alignment = new PVector(0.0, 0.0, 0.0);
+    
+    this.desiredSep = new PVector(0.0, 0.0, 0.0);
     this.neighbors = new ArrayList();
   }
   Berd(PVector p, PVector d, int id){
@@ -78,34 +88,40 @@ class Berd {
     PVector.mult(this.dir, this.maxSpeed, this.vel);
     this.acc = new PVector(0.0, 0.0, 0.0);
     
-    this.weightedSep = new PVector(0.0, 0.0, 0.0);
+    this.separation = new PVector(0.0, 0.0, 0.0);
+    this.cohesion = new PVector(0.0, 0.0, 0.0);
+    this.alignment = new PVector(0.0, 0.0, 0.0);
+    
+    this.desiredSep = new PVector(0.0, 0.0, 0.0);
     this.neighbors = new ArrayList();
   }
   
   void updateAcc() {
-    this.acc.set(this.weightedSep.x, this.weightedSep.y, this.weightedSep.z);
-    this.acc.mult(this.mass * this.mass);
+    this.acc.set(0.0,0.0,0.0); // clear accel
+    this.forces(); // build it back up with forces
+    this.acc.add(this.separation);
+    this.acc.add(this.cohesion);
+    this.acc.add(this.alignment);
   }
   
   void updateVel() {
-    this.vel.add(this.acc);
-    this.vel.limit(this.maxSpeed);
+    this.vel.add(this.acc); // add acceleration vector
+    this.vel.limit(this.maxSpeed); // limit to maximum speed
+    
+    // CAREFUL
+    //this.vel.z = 0.0;
   }
   
   void updatePos(){
-    this.findNeighbors();
-    //this.pos.add(this.dir.mult(this.maxSpeed));
-    this.pos.add(this.vel);
-    this.pos = enforceTorus(this.pos);
+    this.pos.add(this.vel); // add velocity vector
+    this.pos = enforceTorus(this.pos); // enforce boundary conditions
   }
-  // Please note here that maxSpeed is constant for now. 
-  // Will implement the bonafide vector calculus version soon,
-  // after confirming core functionality
+
   void updateDir(){
     //this.dir.set(mouseX-pos.x, mouseY-pos.y, 0.0);
-    //this.dir.set(this.weightedSep.x, this.weightedSep.y, this.weightedSep.z);
     this.dir.set(this.vel.x, this.vel.y, this.vel.z);
     this.dir.normalize();
+    
   }
   
   void drawBerd(){
@@ -113,12 +129,16 @@ class Berd {
     this.updateVel();
     this.updatePos();
     this.updateDir();
+    
+    // rotate Berd to "dir" direction
     PVector axis = this.dir.cross(up);
     axis.normalize();
     float dotProd = this.dir.dot(up);
     float theta = acos(dotProd);
+    
     pushMatrix();
     fill(0,255,0);
+    fill(0,random(255),random(155));
     translate(this.pos.x, this.pos.y, this.pos.z);
     rotate(-theta, axis.x, axis.y, axis.z);
     sphereDetail(1,4); 
@@ -126,7 +146,7 @@ class Berd {
     popMatrix();    
   }
   
-  void findNeighbors() {
+  void forces() {
     // Using exhaustive search for now.
     // If performance requires it, I'll use 
     // something more sophisticated later.
@@ -134,32 +154,83 @@ class Berd {
     this.neighbors.clear();
     
     // simultaneously find avg separation here
-    this.weightedSep.set(0.0,0.0,0.0); // clear it
+    this.desiredSep.set(0.0,0.0,0.0); // clear it
     
     int numNeighbors = 0;
     
+    PVector separationSteering = new PVector(0.0, 0.0, 0.0);
+    
+    PVector avgPos = new PVector(0.0, 0.0, 0.0);
+    PVector avgVel = new PVector(0.0, 0.0, 0.0);
+    
     for (Berd p : Flock) {
       if(p.id != this.id){
-        // The following calculation (two lines) will need done again
-        // maybe find a way to only do it once? 
-        // don't make findNeighbors() its own method?
         PVector sep = new PVector();
         PVector.sub(this.pos,p.pos,sep);
         float dist = sep.mag();
                 
-        if(dist < this.radius){
+        if(dist > 0 && dist < this.radius){
+          // Berd p contributes to behavior of this Berd
           this.neighbors.add(new Berd(p.pos, p.dir, p.id));
           
+          // SEPARATION
+          sep.div(dist);
+          separationSteering.add(sep);
+          
+          // COHESION
+          avgPos.add(p.pos);
+          
+          // ALIGNMENT
+          avgVel.add(p.vel);
+          
+          
           float weight = 1.0/(dist*dist + distance_softening);
-          this.weightedSep.add(sep.mult(weight));
+          this.desiredSep.add(sep.mult(weight));
                     
           numNeighbors++;
         }
       }
     }
     
-    if(numNeighbors != 0) this.weightedSep.mult(1.0/numNeighbors);
+    if(numNeighbors != 0) {
+      
+      // Separation
+      separationSteering.div((float)numNeighbors);
+      if(separationSteering.mag() > 0) {
+        separationSteering.setMag(this.maxSpeed);
+        separationSteering.sub(this.vel);
+        separationSteering.limit(this.maxForce);
+        separationSteering.mult(this.separationWeight);
+      }
+      
+      // COHESION
+      avgPos.div((float)numNeighbors);
+      PVector desiredPos = PVector.sub(avgPos, this.pos);
+      desiredPos.setMag(this.maxSpeed);
+      PVector cohesionSteering = PVector.sub(desiredPos, this.vel);
+      cohesionSteering.limit(this.maxForce);
+      
+      // ALIGNMENT
+      avgVel.div((float)numNeighbors);
+      avgVel.setMag(this.maxSpeed);
+      PVector alignSteering = PVector.sub(avgVel, this.vel);
+      alignSteering.limit(this.maxForce);
+      alignSteering.mult(this.alignmentWeight);
+      this.alignment.set(alignSteering.x, alignSteering.y, alignSteering.x);
+      
+      
+    }
+    else {
+      this.separation.set(0.0, 0.0, 0.0);
+      this.alignment.set(0.0, 0.0, 0.0);
+      this.cohesion.set(0.0, 0.0, 0.0);
+    }
   }
+  
+  // Steering
+  
+  
+  
 }
 
 //////////////////////////////
@@ -188,7 +259,7 @@ void generateFlock(int n){
     Flock = new ArrayList();
     
     PVector tempPos = new PVector(random(XBOUND),random(YBOUND), 0.0);
-    PVector tempDir = new PVector(random(XBOUND),random(YBOUND), 0.0);
+    PVector tempDir = new PVector(random(-XBOUND),random(YBOUND), 0.0);
     tempDir.normalize();
     for(int i= 0; i < n; i++){
       Flock.add(new Berd(tempPos, tempDir, i));
@@ -228,8 +299,8 @@ PVector enforceTorus(PVector pos) {
 void setup() {
   // Initialize Processing
   size(500,500,P3D);
-  background(255);
-  stroke(0);
+  background(0);
+  stroke(255);
   fill(0,255,0);
   lights();
   
@@ -242,8 +313,8 @@ void setup() {
 //////////////////////////////
 
 void draw() {
-   background(255);
-  
+   //background(255);
+   background(0);
    //test individual
    //b.drawBerd();
    
